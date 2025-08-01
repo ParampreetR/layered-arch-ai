@@ -1,0 +1,118 @@
+services:
+  temporal:
+    container_name: temporal
+    healthcheck:
+      test: ["CMD", "bash", "-c", "tctl --ns default cluster health | grep SERVING"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=postgres-temporal
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - SQL_PLUGIN=postgres
+      - SQL_HOST=postgres-temporal
+      - SQL_PORT=5432
+      - SQL_USER=postgres
+      - SQL_PASSWORD=postgres
+      - SQL_DATABASE=settlement
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+    image: temporalio/auto-setup:1.22.4
+    depends_on:
+      db-temporal:
+        condition: service_healthy
+    networks:
+      - app-network
+    ports:
+      - 7233:7233
+    volumes:
+      - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig
+  db-temporal:
+    image: postgres:15
+    container_name: postgres-temporal
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=settlement
+    volumes:
+      - postgres_temporal_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  temporal-ui:
+    container_name: temporal-ui
+    depends_on:
+      temporal:
+        condition: service_healthy 
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    image: temporalio/ui:2.21.3
+    networks:
+      - app-network
+    ports:
+      - 8233:8080
+  db:
+    image: debezium/postgres:15
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=error-rectification
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Kafka services are defined in docker-comopose-cdc.yml
+  # Use: docker-compose -f docker-compose.yml -f docker-comopose-cdc.yml up -d
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: cra-settlement-worker
+    restart: unless-stopped
+    environment:
+      - IS_DOCKER=true
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/error-rectification?sslmode=disable
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - TEMPORAL_NAMESPACE=default
+      - LOG_LEVEL=info
+      - OTEL_ENABLED=false
+      - OPA_ENABLED=false
+    depends_on:
+      db:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    networks:
+      - app-network
+
+volumes:
+  yugabyte_data:
+  yugabyte_temporal_data:
+  postgres_data:
+  postgres_temporal_data:
+
+networks:
+  app-network:
+    driver: bridge
